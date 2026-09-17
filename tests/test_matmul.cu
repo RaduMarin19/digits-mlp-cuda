@@ -4,6 +4,7 @@
 #include <cmath>
 #include "common.cuh"
 #include "matmul.cuh"
+#include "test_utils.cuh"
 
 static void cpu_gemm(const float* A, const float* B, float* C,
                      int M, int N, int K) {
@@ -14,13 +15,6 @@ static void cpu_gemm(const float* A, const float* B, float* C,
                 acc += (double)A[m*K + k] * B[k*N + n];
             C[m*N + n] = (float)acc;
         }
-}
-
-static void fill(float* p, int n, unsigned& seed) {
-    for (int i = 0; i < n; ++i) {
-        seed = seed * 1664525u + 1013904223u;    // LCG: reproducible, no <random>
-        p[i] = ((float)(seed >> 8) / 8388608.0f) - 1.0f;   // ~[-1,1]
-    }
 }
 
 static int check(int M, int N, int K) {
@@ -45,19 +39,8 @@ static int check(int M, int N, int K) {
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(hC, dC, nC*4, cudaMemcpyDeviceToHost));
 
-    const double atol = 1e-5, rtol = 1e-4;
-    double worst = 0.0; int bad_i = -1;
-    for (size_t i = 0; i < nC; ++i) {
-        double err = fabs((double)hC[i] - ref[i]);
-        double tol = atol + rtol * fabs(ref[i]);
-        double score = err / tol;                 // >1 means fail
-        if (score > worst) { worst = score; bad_i = (int)i; }
-    }
-    int ok = worst <= 1.0;
-    printf("%-18s M=%-4d N=%-4d K=%-4d  rel_err=%.2e  %s\n",
-           ok ? "[ok]" : "[FAIL]", M, N, K, worst, ok ? "" : "<-- look here");
-    if (!ok) printf("   worst at C[%d][%d]: got %g want %g\n",
-                    bad_i / N, bad_i % N, hC[bad_i], ref[bad_i]);
+    int ok = close(hC, ref, nC);
+    printf("%-8s M=%-4d N=%-4d K=%-4d\n", ok ? "[ok]" : "[FAIL]", M, N, K);
 
     cudaFree(dA); cudaFree(dB); cudaFree(dC);
     free(hA); free(hB); free(hC); free(ref);

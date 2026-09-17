@@ -1,7 +1,7 @@
 NVCC   := nvcc
 ARCH   ?= -arch=sm_70
 FLAGS  := $(ARCH) -O3 -Iinclude
-DEPventry = -MMD -MP
+TESTBINS := build/test_matmul build/test_layers
 
 SRCS   := $(wildcard src/*.cu)
 OBJS   := $(patsubst src/%.cu,build/%.o,$(SRCS))
@@ -19,8 +19,15 @@ build/%.o: src/%.cu | build
 build:
 	mkdir -p build
 
-test: build/matmul.o tests/test_matmul.cu | build
-	$(NVCC) $(FLAGS) $^ -o build/test_matmul && ./build/test_matmul
+test: $(TESTBINS)
+	for t in $(TESTBINS); do ./$$t || exit 1; done
+
+
+build/test_matmul: build/matmul.o tests/test_matmul.cu | build
+	$(NVCC) $(FLAGS) $^ -o $@
+
+build/test_layers: build/layers.o tests/test_layers.cu | build
+	$(NVCC) $(FLAGS) $^ -o $@
 
 clean:
 	rm -rf build mlp
