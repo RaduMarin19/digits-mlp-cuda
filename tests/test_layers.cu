@@ -26,6 +26,27 @@ static void cpu_softmax_xent(const float* Z, const int* y, float* probs, float* 
     }
 }
 
+static void cpu_xent_backward(const float* probs, const int* y, float* dZ, int M, int N, float scale){
+    for (int row = 0; row < M; ++row){
+        for(int col = 0; col < N; ++col){
+            dZ[row * N + col] = (probs[row * N + col] - (float)(col == y[row])) * scale;
+        }
+    }
+}
+
+static void cpu_col_sum(const float* dZ, float* db, int M, int N){
+    // M rows N cols
+    // db: [N]
+    for(int col = 0; col < N; ++col)
+        db[col] = 0.f;
+    for(int col = 0; col < N; ++col){ // passing through all the cols
+        for(int i = 0; i < M; ++i){ //passing through all the rows for 1 col
+            db[col] += dZ[i * N + col];
+        }
+    }
+}
+
+
 static int check(int M, int N){
     size_t nZ = (size_t) M * N, nY = (size_t) M, nP = (size_t) M * N, nL = (size_t) M;
     float* hZ = (float*)malloc(nZ * sizeof(float));
@@ -35,6 +56,7 @@ static int check(int M, int N){
     float* refP = (float*)malloc(nP * sizeof(float));
     float* refL = (float*)malloc(nL * sizeof(float));
 
+    printf("FORWARD CHECK!\n");
     unsigned seed = 12345;
     fill(hZ, nZ, seed);
     fill_labels(hY, nY, N, seed);
@@ -58,21 +80,68 @@ static int check(int M, int N){
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(hP, dP, nP * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(hL, dL, nL * sizeof(float), cudaMemcpyDeviceToHost));
+    
+    int ok_fwd = close(hP, refP, nP) && close(hL, refL, nL);
+    printf("%-8s M=%-4d N=%-4d \n", ok_fwd ? "[ok]" : "[FAIL softmax xent]", M, N);
 
-    int ok = close(hP, refP, nP) && close(hL, refL, nL);
-    printf("%-8s M=%-4d N=%-4d \n", ok ? "[ok]" : "[FAIL]", M, N);
+    printf("BACKWARD CHECK!\n");
 
+    float* refderZ = (float*)malloc(nZ * sizeof(float));
+    float* derZ = (float*)malloc(nZ * sizeof(float));
+    float* dderZ;
+    CUDA_CHECK(cudaMalloc(&dderZ, nZ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(dderZ, 0xFF, nZ * sizeof(float)));
+    memset(refderZ, 0xFF, nZ*sizeof(float));
+    
+    float scale = 1.0f/(float)M;
+    xent_backward(dP, dY, dderZ, M, N, scale);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(derZ, dderZ, nZ * sizeof(float), cudaMemcpyDeviceToHost));
+
+    cpu_xent_backward(refP, hY, refderZ, M, N, scale);
+
+    int ok_bwd = close(derZ, refderZ, nZ);
+    printf("%-8s M=%-4d N=%-4d \n", ok_bwd ? "[ok]" : "[FAIL xent BWD]", M, N);
+
+    printf("COL SUM CHECK!\n");
+
+    // initialize hB, dB
+    float* refB = (float*)malloc(N*sizeof(float));
+    float* hB = (float*)malloc(N*sizeof(float));
+    float* dB;
+    memset(refB, 0xFF, N * sizeof(float));
+    memset(hB, 0xFF, N * sizeof(float));
+    //alloc mem to dB
+    CUDA_CHECK(cudaMalloc(&dB, N * sizeof(float)));
+    CUDA_CHECK(cudaMemset(dB, 0xFF, N * sizeof(float)));
+    //call kernel
+    col_sum(dZ, dB, M, N);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(hB, dB, N * sizeof(float), cudaMemcpyDeviceToHost));
+
+    cpu_col_sum(hZ, refB, M, N);
+
+    int ok_colsum = close(hB, refB, N);
+    printf("%-8s M=%-4d N=%-4d \n", ok_colsum ? "[ok]" : "[FAIL col-sum]", M, N);
+
+    
     cudaFree(dZ);
     cudaFree(dY);
     cudaFree(dP);
     cudaFree(dL);
+    cudaFree(dderZ);
+    cudaFree(dB);
     free(hZ);
     free(hY);
     free(hP);
     free(hL);
     free(refP);
     free(refL);
-    return ok;
+    free(refderZ);
+    free(derZ);
+    free(hB);
+    free(refB);
+    return ok_fwd && ok_bwd && ok_colsum;
 }
 
 int main(){

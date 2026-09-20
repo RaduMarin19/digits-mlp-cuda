@@ -1,6 +1,6 @@
 #include "layers.cuh"
 
-__global__ void add_bias(float* __restrict__ Z, const float* __restrict__ b, int M, int N) { 
+__global__ void add_bias_kernel(float* __restrict__ Z, const float* __restrict__ b, int M, int N) { 
     // calculate position in Z
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -11,7 +11,17 @@ __global__ void add_bias(float* __restrict__ Z, const float* __restrict__ b, int
     Z[row * N + col] += b[col];
 }
 
-__global__ void add_bias_relu(float* __restrict__ Z, const float* __restrict__ b, int M, int N) {
+__host__ void add_bias(float *Z, const float *b, int M, int N)
+{
+    dim3 block(ADDBIAS_BLOCK, ADDBIAS_BLOCK);
+    dim3 grid(CEIL_DIV(N, ADDBIAS_BLOCK), 
+            CEIL_DIV(M, ADDBIAS_BLOCK));
+    add_bias_kernel<<<grid, block>>>(Z, b, M, N);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void add_bias_relu_kernel(float *__restrict__ Z, const float *__restrict__ b, int M, int N)
+{
     // calculate position in Z
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -22,6 +32,15 @@ __global__ void add_bias_relu(float* __restrict__ Z, const float* __restrict__ b
     float result = Z[row * N + col];
     result += b[col];
     Z[row * N + col] = result > 0 ? result : 0;
+}
+
+__host__ void add_bias_relu(float *Z, const float *b, int M, int N)
+{
+    dim3 block(ADDBIAS_BLOCK, ADDBIAS_BLOCK);
+    dim3 grid(CEIL_DIV(N, ADDBIAS_BLOCK), 
+            CEIL_DIV(M, ADDBIAS_BLOCK));
+    add_bias_relu_kernel<<<grid, block>>>(Z, b, M, N);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void softmax_xent_kernel(const float *Z, const int *__restrict__ y, float *__restrict__ probs, float *__restrict__ loss, int M, int N)
@@ -90,5 +109,78 @@ __host__ void softmax_xent(const float *Z, const int *y, float *probs, float *lo
     dim3 block(SOFTMAX_BLOCK);
     dim3 grid(M); // x cols
     softmax_xent_kernel<<<grid, block>>>(Z, y, probs, loss, M, N);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void xent_backward_kernel(const float *__restrict__ probs, const int *__restrict__ y, float *__restrict__ dZ, int M, int N, float scale)
+{
+    // calculate position in dZ
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row >= M || col >= N)
+        return;
+    
+    dZ[row * N + col] = (probs[row * N + col] - (float)(col == y[row])) * scale;
+}
+
+__host__ void xent_backward(const float *probs, const int *y, float *dZ, int M, int N, float scale)
+{
+    dim3 block(XENTBWD_BLOCK, XENTBWD_BLOCK);
+    dim3 grid(CEIL_DIV(N, XENTBWD_BLOCK), 
+            CEIL_DIV(M, XENTBWD_BLOCK));
+    xent_backward_kernel<<<grid, block>>>(probs, y, dZ, M, N, scale);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void relu_backward_kernel(float *__restrict__ dZ, const float *__restrict__ A, int M, int N)
+{
+    // calculate position in dZ
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row >= M || col >= N)
+        return;
+    
+    dZ[row * N + col] *= (A[row * N + col] > 0.f);
+}
+
+__host__ void relu_backward(float *dZ, const float *A, int M, int N)
+{
+    dim3 block(RELUBWD_BLOCK, RELUBWD_BLOCK);
+    dim3 grid(CEIL_DIV(N, RELUBWD_BLOCK), 
+            CEIL_DIV(M, RELUBWD_BLOCK));
+    relu_backward_kernel<<<grid, block>>>(dZ, A, M, N);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void col_sum_kernel(const float *__restrict__ dZ, float *__restrict__ db, int M, int N)
+{
+    int column = blockIdx.x;
+    int tid = threadIdx.x;
+
+    __shared__ float sm[COLSUM_BLOCK];
+
+    float partial = 0.f;
+    for(int i = tid; i < M; i += blockDim.x){
+        partial += dZ[i * N + column];
+    }
+    sm[tid] = partial;
+    __syncthreads();
+
+    for(int s = blockDim.x / 2; s > 0; s >>= 1){
+        if (tid < s) sm[tid] += sm[tid + s];
+        __syncthreads();
+    }
+    __syncthreads();
+    if(tid == 0)
+        db[column] = sm[0]; 
+}
+
+__host__ void col_sum(const float *dZ, float *db, int M, int N)
+{
+    dim3 block(COLSUM_BLOCK);
+    dim3 grid(N);
+    col_sum_kernel<<<grid, block>>>(dZ, db, M, N);
     CUDA_CHECK(cudaGetLastError());
 }

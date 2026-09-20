@@ -12,4 +12,8 @@
     }\
 } while(0)
 
+/**
+ * calculate a/b with round up instead of truncating.
+ * ensure that the grid covers the whole matrix when launching
+ */
 #define CEIL_DIV(a, b) (((a) + (b) - 1) / b)
