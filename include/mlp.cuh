@@ -44,3 +44,7 @@ void mlp_free(MLP* net);
 void update(MLP* net, float lr, float miu);
 
 void evaluate(MLP* net, Dataset* ds, float *out_loss, float *out_acc);
+
+void mlp_save(MLP* net, const char *path);
+
+void mlp_load(MLP* net, const char *path);

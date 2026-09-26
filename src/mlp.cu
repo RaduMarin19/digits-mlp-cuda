@@ -159,3 +159,70 @@ void mlp_free(MLP* net){
     free(net->layers);
 }
 
+void mlp_save(MLP* net, const char* path) {
+    FILE* f = fopen(path, "wb");
+    fwrite(&net->num_layers, sizeof(int), 1, f);
+    fwrite(&net->batch_size, sizeof(int), 1, f);
+    for (int l = 0; l < net->num_layers; ++l) {
+        Layer* L = &net->layers[l];
+        fwrite(&L->in,  sizeof(int), 1, f);
+        fwrite(&L->out, sizeof(int), 1, f);
+        float* hW = (float*)malloc(L->in * L->out * sizeof(float));
+        float* hb = (float*)malloc(L->out * sizeof(float));
+        cudaMemcpy(hW, L->W, L->in * L->out * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hb, L->b, L->out * sizeof(float), cudaMemcpyDeviceToHost);
+        fwrite(hW, sizeof(float), L->in * L->out, f);
+        fwrite(hb, sizeof(float), L->out, f);
+        free(hW); free(hb);
+    }
+    fclose(f);
+}
+
+void mlp_load(MLP* net, const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); exit(1); }
+
+    fread(&net->num_layers, sizeof(int), 1, f);
+    fread(&net->batch_size, sizeof(int), 1, f);
+
+    net->layers = (Layer*)malloc(net->num_layers * sizeof(Layer));
+    for (int l = 0; l < net->num_layers; ++l) {
+        Layer* L = &net->layers[l];
+        fread(&L->in,  sizeof(int), 1, f);
+        fread(&L->out, sizeof(int), 1, f);
+
+        // allocate all buffers same as mlp_init
+        CUDA_CHECK(cudaMalloc(&L->W,  L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->b,  L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->dW, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->db, L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->vW, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->vb, L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->A,  net->batch_size * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->dZ, net->batch_size * L->out * sizeof(float)));
+
+        // zero everything except W and b
+        CUDA_CHECK(cudaMemset(L->dW, 0, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->db, 0, L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->vW, 0, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->vb, 0, L->out * sizeof(float)));
+
+        // load W and b from file
+        float* hW = (float*)malloc(L->in * L->out * sizeof(float));
+        float* hb = (float*)malloc(L->out * sizeof(float));
+        fread(hW, sizeof(float), L->in * L->out, f);
+        fread(hb, sizeof(float), L->out, f);
+        CUDA_CHECK(cudaMemcpy(L->W, hW, L->in * L->out * sizeof(float),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(L->b, hb, L->out * sizeof(float),
+                              cudaMemcpyHostToDevice));
+        free(hW); free(hb);
+    }
+
+    // probs and loss — need C from last layer
+    int C = net->layers[net->num_layers-1].out;
+    CUDA_CHECK(cudaMalloc(&net->probs, net->batch_size * C * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&net->loss,  net->batch_size * sizeof(float)));
+
+    fclose(f);
+}
