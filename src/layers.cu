@@ -125,7 +125,9 @@ __global__ void xent_backward_kernel(const float *__restrict__ probs, const int 
 }
 
 __host__ void xent_backward(const float *probs, const int *y, float *dZ, int M, int N, float scale)
-{
+{  
+    if (scale <= 0.f)
+        scale = 1 / (float)M;
     dim3 block(XENTBWD_BLOCK, XENTBWD_BLOCK);
     dim3 grid(CEIL_DIV(N, XENTBWD_BLOCK), 
             CEIL_DIV(M, XENTBWD_BLOCK));

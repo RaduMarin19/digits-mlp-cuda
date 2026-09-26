@@ -74,7 +74,7 @@ __global__ void xent_backward_kernel(const float* __restrict__ probs,
 __host__ void xent_backward(const float* probs, 
                                 const int* y,
                                 float* dZ,
-                                int M, int N, float scale);
+                                int M, int N, float scale = -1);
 
 /**
  * Gradient of relu w.r.t. the error.
