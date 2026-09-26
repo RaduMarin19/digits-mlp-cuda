@@ -33,9 +33,35 @@ void dataset_free(Dataset* ds){
     cudaFree(ds->y);
 }
 
+void shuffle(int* idx, int n) {
+    std::mt19937 rng{std::random_device{}()};
+
+    for (int i = n - 1; i > 0; --i) {
+        std::uniform_int_distribution<int> dist(0, i);
+        std::swap(idx[i], idx[dist(rng)]);
+    }
+}
+
+__global__ void gather_rows_kernel(const float* X, const int* idx, float* X_batch, int d, int batch) {
+    for (int row = blockIdx.x; row < batch; row += gridDim.x)
+        for (int col = threadIdx.x; col < d; col += blockDim.x)
+            X_batch[row * d + col] = X[idx[row] * d + col];
+}
+
 void gather_rows(const float* X, const int* idx, float* X_batch, int d, int batch){
-    int row = blockIdx.x;
-    int col = threadIdx.x;
-    if (row >= batch || col >= d) return;
-    X_batch[row * d + col] = X[idx[row] * d + col];
+    dim3 threads(256);
+    dim3 grid(256);
+    gather_rows_kernel<<<grid, threads>>>(X, idx, X_batch, d, batch);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void gather_labels_kernel(const int* y, const int* idx,
+                                     int* y_batch, int batch) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < batch; i += gridDim.x * blockDim.x)
+        y_batch[i] = y[idx[i]];
+}
+
+void gather_labels(const int* y, const int* idx, int* y_batch, int batch) {
+    gather_labels_kernel<<<256, 256>>>(y, idx, y_batch, batch);
+    CUDA_CHECK(cudaGetLastError());
 }

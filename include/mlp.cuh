@@ -7,6 +7,7 @@
 #include "matmul.cuh"
 #include "layers.cuh"
 #include "optim.cuh"
+#include "data.cuh"
 
 typedef struct{
     int in, out; // layer dimensions
@@ -42,3 +43,4 @@ void mlp_free(MLP* net);
 
 void update(MLP* net, float lr, float miu);
 
+void evaluate(MLP* net, Dataset* ds, float *out_loss, float *out_acc);

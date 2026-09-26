@@ -1,7 +1,7 @@
 #include "mlp.cuh"
 
 void forward(MLP *net, const float *X, const int* y)
-{   
+{  
     int batch = net->batch_size;
     int n_layers = net->num_layers;
     for (int l = 0; l < n_layers; ++l){
@@ -59,8 +59,44 @@ void update(MLP* net, float lr, float miu){
     }
 }
 
+void evaluate(MLP *net, Dataset* ds, float *out_loss, float *out_acc)
+{
+    float* hLoss = (float*)malloc(net->batch_size * sizeof(float));
+    float* hProbs = (float*)malloc(net->batch_size * ds->C * sizeof(float));
+    int*   hy     = (int*)  malloc(net->batch_size * sizeof(int));
+
+    *out_loss = 0.f;
+    *out_acc  = 0.f;
+    int n_batches = ds->n / net->batch_size;
+    for (int b = 0; b < n_batches; ++b) {
+        float* X_b = ds->X + (size_t)b * net->batch_size * ds->d;
+        int*   y_b = ds->y + b * net->batch_size;
+
+        forward(net, X_b, y_b);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_CHECK(cudaMemcpy(hLoss,  net->loss,  net->batch_size * sizeof(float),         cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hProbs, net->probs, net->batch_size * ds->C * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hy,     y_b,        net->batch_size * sizeof(int),           cudaMemcpyDeviceToHost));
+
+        for (int i = 0; i < net->batch_size; ++i) {
+            *out_loss += hLoss[i] / ds->n;
+            float prob_max = -1.f; int predicted = 0;
+            for (int c = 0; c < ds->C; ++c)
+                if (hProbs[i*ds->C + c] > prob_max) {
+                    prob_max = hProbs[i*ds->C + c];
+                    predicted = c;
+                }
+            if (predicted == hy[i])
+                *out_acc += 1.0f / (float)ds->n;
+        }
+    }
+    free(hLoss); free(hProbs); free(hy);
+}
+
 void mlp_init(MLP *net, const int* dim_layers, int num_layers, int batch_size, int feats, int C)
 {
+    std::mt19937 rng{std::random_device{}()};
     net->batch_size = batch_size;
     net->num_layers = num_layers;
     net->layers = (Layer*)malloc(net->num_layers * sizeof(Layer));
@@ -75,6 +111,7 @@ void mlp_init(MLP *net, const int* dim_layers, int num_layers, int batch_size, i
             L->out = C;
         else
             L->out = dim_layers[l];
+        CUDA_CHECK(cudaMalloc(&L->W, L->in * L->out * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&L->b, L-> out * sizeof(float)));
 
         CUDA_CHECK(cudaMalloc(&L->dW, L->in * L-> out * sizeof(float)));
@@ -92,13 +129,12 @@ void mlp_init(MLP *net, const int* dim_layers, int num_layers, int batch_size, i
         CUDA_CHECK(cudaMemset(L->vW, 0, L->in * L->out * sizeof(float)));
         CUDA_CHECK(cudaMemset(L->vb, 0, L->out * sizeof(float)));
 
+        float std_val = sqrtf(2.0f / L->in);
+        std::normal_distribution<float> dist(0.0f, std_val);
         float* hW = (float*)malloc(L->in * L->out * sizeof(float));
-        float std = sqrtf(2.0f / L->in);
-        std::mt19937 rng {std::random_device{}()};
-        std::uniform_int_distribution<int> dist {0, std};
-        std::generate(hW, hW + L->in * L->out * sizeof(float), dist);
+        std::generate(hW, hW + L->in * L->out, [&](){ return dist(rng); });
         CUDA_CHECK(cudaMemcpy(L->W, hW, L->in * L->out * sizeof(float),
-                      cudaMemcpyHostToDevice));
+                              cudaMemcpyHostToDevice));
         free(hW);
     }
     CUDA_CHECK(cudaMalloc(&net->probs, net->batch_size * C * sizeof(float)));
