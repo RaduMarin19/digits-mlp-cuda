@@ -41,3 +41,85 @@ void backward(MLP* net, const float* X, const int* y){
             gemm(L->dZ, L->W, net->layers[l-1].dZ, batch, L->in, L->out, false, true);
     }
 }
+
+void update(MLP* net, float lr, float miu){
+    int threads = 256;
+    for (int l = 0; l < net->num_layers; ++l){
+        Layer *L = &net->layers[l];
+
+        int nW = L->in * L->out;
+        int nb = L->out;
+        sgd_momentum<<<CEIL_DIV(nW, threads), threads>>>(
+            L->W, L->vW, L->dW, nW, lr, miu
+        );
+        sgd_momentum<<<CEIL_DIV(nb, threads), threads>>>(
+            L->b, L->vb, L->db, nb, lr, miu
+        );
+        CUDA_CHECK(cudaGetLastError());
+    }
+}
+
+void mlp_init(MLP *net, const int* dim_layers, int num_layers, int batch_size, int feats, int C)
+{
+    net->batch_size = batch_size;
+    net->num_layers = num_layers;
+    net->layers = (Layer*)malloc(net->num_layers * sizeof(Layer));
+    for(int l = 0; l < net->num_layers; ++l){
+        Layer* L = &net->layers[l];
+        
+        if(l == 0)
+            L->in = feats;
+        else
+            L->in = net->layers[l-1].out;
+        if(l == num_layers - 1)
+            L->out = C;
+        else
+            L->out = dim_layers[l];
+        CUDA_CHECK(cudaMalloc(&L->b, L-> out * sizeof(float)));
+
+        CUDA_CHECK(cudaMalloc(&L->dW, L->in * L-> out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->db, L-> out * sizeof(float)));
+
+        CUDA_CHECK(cudaMalloc(&L->vW, L->in * L-> out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->vb, L-> out * sizeof(float)));
+        
+        CUDA_CHECK(cudaMalloc(&L->A, net->batch_size * L-> out * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&L->dZ, net->batch_size * L-> out * sizeof(float)));
+
+        CUDA_CHECK(cudaMemset(L->b,  0, L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->dW, 0, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->db, 0, L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->vW, 0, L->in * L->out * sizeof(float)));
+        CUDA_CHECK(cudaMemset(L->vb, 0, L->out * sizeof(float)));
+
+        float* hW = (float*)malloc(L->in * L->out * sizeof(float));
+        float std = sqrtf(2.0f / L->in);
+        std::mt19937 rng {std::random_device{}()};
+        std::uniform_int_distribution<int> dist {0, std};
+        std::generate(hW, hW + L->in * L->out * sizeof(float), dist);
+        CUDA_CHECK(cudaMemcpy(L->W, hW, L->in * L->out * sizeof(float),
+                      cudaMemcpyHostToDevice));
+        free(hW);
+    }
+    CUDA_CHECK(cudaMalloc(&net->probs, net->batch_size * C * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&net->loss, net->batch_size * sizeof(float)));
+}
+
+void mlp_free(MLP* net){
+    for(int l = 0; l < net->num_layers; ++l){
+        Layer* L = &net->layers[l];
+
+        cudaFree(L->W);
+        cudaFree(L->b);
+        cudaFree(L->dW);
+        cudaFree(L->db);
+        cudaFree(L->vW);
+        cudaFree(L->vb);
+        cudaFree(L->A);
+        cudaFree(L->dZ);
+    }
+    cudaFree(net->probs);
+    cudaFree(net->loss);
+    free(net->layers);
+}
+

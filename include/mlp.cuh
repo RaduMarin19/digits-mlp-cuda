@@ -1,5 +1,8 @@
 #pragma once
 
+#include <random>
+#include <algorithm>
+
 #include "common.cuh"
 #include "matmul.cuh"
 #include "layers.cuh"
@@ -31,4 +34,11 @@ typedef struct {
 
 void forward(MLP* net, const float* X, const int* y);
 
-void backward(MLP* net);
+void backward(MLP* net, const float* X, const int* y);
+
+void mlp_init(MLP* net, const int* dim_layers, int num_layers, int batch_size, int feats, int C);
+
+void mlp_free(MLP* net);
+
+void update(MLP* net, float lr, float miu);
+

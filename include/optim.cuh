@@ -10,4 +10,4 @@
 __global__ void sgd_momentum(float* __restrict__ W, 
                             float* __restrict__ v, 
                             const float* __restrict__ dW, 
-                            float lr, float miu);
+                            int N, float lr, float miu);
